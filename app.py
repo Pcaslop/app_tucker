@@ -82,7 +82,7 @@ MAX_CURVES = 7
 
 SAMPLE_DATA_URLS = {
     "UK": "https://raw.githubusercontent.com/Pcaslop/app_tucker/main/UK_DATA.csv",
-    "FED": "https://raw.githubusercontent.com/Pcaslop/app_tucker/main/FED_DATA.csv",
+    "FED": "https://raw.githubusercontent.com/Pcaslop/app_tucker/main/fed_data.csv",
 }
 
 
