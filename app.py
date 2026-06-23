@@ -4,8 +4,10 @@
 Tucker Yield Curve Explorer
 """
 
+import io
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -78,6 +80,11 @@ COLORS = ["#58a6ff", "#3fb950", "#ff7b72",
           "#d2a8ff", "#ffa657", "#79c0ff", "#56d364"]
 MAX_CURVES = 7
 
+SAMPLE_DATA_URLS = {
+    "UK": "https://raw.githubusercontent.com/Pcaslop/app_tucker/main/UK_DATA.csv",
+    "FED": "https://raw.githubusercontent.com/Pcaslop/app_tucker/main/FED_DATA.csv",
+}
+
 
 def hex_to_rgba(hex_color, alpha=0.13):
     """Convert '#rrggbb' to 'rgba(r,g,b,alpha)' — Plotly doesn't accept 8-digit hex."""
@@ -113,6 +120,34 @@ def parse_csv(uploaded_file, label):
     except Exception as e:
         st.error(f"**{label}**: parse error — {e}")
         return None, None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_sample_csv(url):
+    """Download a sample CSV from GitHub raw and return its raw bytes."""
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    return r.content
+
+
+def load_sample_data():
+    """
+    Load the default UK + FED sample curves from GitHub.
+    Returns {label: DataFrame} using the same parsing logic as uploads.
+    Returns {} if any download/parse fails (caller should handle fallback).
+    """
+    result = {}
+    for label, url in SAMPLE_DATA_URLS.items():
+        try:
+            raw_bytes = fetch_sample_csv(url)
+            df, mats = parse_csv(io.BytesIO(raw_bytes), label)
+            if df is not None:
+                if df.median().median() > 1:
+                    df = df / 100
+                result[label] = df
+        except Exception as e:
+            st.error(f"Could not load sample data for **{label}**: {e}")
+    return result
 
 
 def align_all(curves_dict):
@@ -184,60 +219,96 @@ with tab1:
         "Yields in decimal (0.04) or percent (4.0) — auto-detected."
     )
 
-    btn_col1, btn_col2, _ = st.columns([1, 1, 5])
-    with btn_col1:
-        if st.button("＋  Add curve",
-                     disabled=st.session_state["n_curves"] >= MAX_CURVES):
-            st.session_state["n_curves"] += 1
-    with btn_col2:
-        if st.button("－  Remove curve",
-                     disabled=st.session_state["n_curves"] <= 2):
-            st.session_state["n_curves"] -= 1
-
-    st.markdown("")
+    data_source = st.radio(
+        "Data source",
+        options=["Sample data (UK + FED)", "Upload my own CSVs"],
+        index=0,
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
     curves_parsed = {}
-    for i in range(st.session_state["n_curves"]):
-        with st.container():
-            st.markdown('<div class="curve-row">', unsafe_allow_html=True)
-            c_name, c_file, c_info = st.columns([2, 3, 4])
 
-            with c_name:
-                label = st.text_input(
-                    "Name", value=f"Curve {i+1}",
-                    key=f"label_{i}",
-                    label_visibility="collapsed",
-                    placeholder=f"Curve {i+1}",
+    if data_source == "Sample data (UK + FED)":
+        with st.spinner("Loading sample data from GitHub…"):
+            curves_parsed = load_sample_data()
+
+        if curves_parsed:
+            st.success(f"Loaded {len(curves_parsed)} sample curves: "
+                       f"{', '.join(curves_parsed.keys())}")
+            info_cols = st.columns(len(curves_parsed))
+            for col, (label, df) in zip(info_cols, curves_parsed.items()):
+                rng = (f"{df.index.min().strftime('%Y-%m-%d')} → "
+                       f"{df.index.max().strftime('%Y-%m-%d')}")
+                badges = " ".join(
+                    f'<span class="badge">{m}y</span>' for m in df.columns
                 )
-            with c_file:
-                f = st.file_uploader(
-                    "Upload CSV", type=["csv"],
-                    key=f"upload_{i}",
-                    label_visibility="collapsed",
+                col.markdown(
+                    f"<div class='curve-row'><b>{label}</b><br>"
+                    f"<small style='color:#8b949e'>{rng} &nbsp;|&nbsp; "
+                    f"{len(df):,} obs</small><br>{badges}</div>",
+                    unsafe_allow_html=True,
                 )
-            with c_info:
-                if f is not None:
-                    df, mats = parse_csv(f, label)
-                    if df is not None:
-                        if df.median().median() > 1:
-                            df = df / 100
-                        curves_parsed[label] = df
-                        rng = (f"{df.index.min().strftime('%Y-%m-%d')} → "
-                               f"{df.index.max().strftime('%Y-%m-%d')}")
-                        badges = " ".join(
-                            f'<span class="badge">{m}y</span>' for m in mats
-                        )
+        else:
+            st.warning(
+                "Sample data could not be loaded. Switch to "
+                "**Upload my own CSVs** to continue."
+            )
+
+    else:
+        btn_col1, btn_col2, _ = st.columns([1, 1, 5])
+        with btn_col1:
+            if st.button("＋  Add curve",
+                         disabled=st.session_state["n_curves"] >= MAX_CURVES):
+                st.session_state["n_curves"] += 1
+        with btn_col2:
+            if st.button("－  Remove curve",
+                         disabled=st.session_state["n_curves"] <= 2):
+                st.session_state["n_curves"] -= 1
+
+        st.markdown("")
+
+        for i in range(st.session_state["n_curves"]):
+            with st.container():
+                st.markdown('<div class="curve-row">', unsafe_allow_html=True)
+                c_name, c_file, c_info = st.columns([2, 3, 4])
+
+                with c_name:
+                    label = st.text_input(
+                        "Name", value=f"Curve {i+1}",
+                        key=f"label_{i}",
+                        label_visibility="collapsed",
+                        placeholder=f"Curve {i+1}",
+                    )
+                with c_file:
+                    f = st.file_uploader(
+                        "Upload CSV", type=["csv"],
+                        key=f"upload_{i}",
+                        label_visibility="collapsed",
+                    )
+                with c_info:
+                    if f is not None:
+                        df, mats = parse_csv(f, label)
+                        if df is not None:
+                            if df.median().median() > 1:
+                                df = df / 100
+                            curves_parsed[label] = df
+                            rng = (f"{df.index.min().strftime('%Y-%m-%d')} → "
+                                   f"{df.index.max().strftime('%Y-%m-%d')}")
+                            badges = " ".join(
+                                f'<span class="badge">{m}y</span>' for m in mats
+                            )
+                            st.markdown(
+                                f"<small style='color:#8b949e'>{rng} &nbsp;|&nbsp; "
+                                f"{len(df):,} obs</small><br>{badges}",
+                                unsafe_allow_html=True,
+                            )
+                    else:
                         st.markdown(
-                            f"<small style='color:#8b949e'>{rng} &nbsp;|&nbsp; "
-                            f"{len(df):,} obs</small><br>{badges}",
+                            "<small style='color:#484f58'>No file uploaded</small>",
                             unsafe_allow_html=True,
                         )
-                else:
-                    st.markdown(
-                        "<small style='color:#484f58'>No file uploaded</small>",
-                        unsafe_allow_html=True,
-                    )
-            st.markdown("</div>", unsafe_allow_html=True)
+                st.markdown("</div>", unsafe_allow_html=True)
 
     if len(curves_parsed) < 2:
         st.info("Upload at least 2 CSV files to continue.")
